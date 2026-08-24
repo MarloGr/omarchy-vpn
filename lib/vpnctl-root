@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+readonly ETC=/etc/omarchy-vpn
+readonly PROFILES=$ETC/profiles
+readonly SETTINGS=$ETC/settings
+readonly RECENT=$ETC/recent
+readonly STALE=$ETC/stale
+readonly RUN=/run/omarchy-vpn
+readonly ACTIVE=$RUN/active
+readonly IPV6_STATE=$RUN/ipv6-state
+readonly DEADMAN=$RUN/deadman-armed
+readonly DEFAULT_PROFILE=$ETC/default-profile
+readonly DNS_DEFAULT=$ETC/dns-default
+readonly WG=omarchy-vpn
+readonly TABLE=omarchy_vpn
+
+mkdir -p "$RUN"
+chmod 755 "$RUN"
+
+# The menu, resume hook, startup service, and watchdog can all request a
+# connection at once.  Serialize the complete state transition so one caller
+# cannot run wg-quick up while another is still tearing the interface down.
+exec 9>"$RUN/control.lock"
+flock 9
+
+touch "$SETTINGS"
+touch "$STALE"
+chmod 600 "$STALE"
+grep -q '^autoconnect=' "$SETTINGS" || echo 'autoconnect=false' >> "$SETTINGS"
+grep -q '^killswitch=' "$SETTINGS" || echo 'killswitch=false' >> "$SETTINGS"
+
+setting() { sed -n "s/^$1=//p" "$SETTINGS" | tail -n1; }
+set_setting() { sed -i "/^$1=/d" "$SETTINGS"; printf '%s=%s\n' "$1" "$2" >> "$SETTINGS"; }
+valid_profile() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ && -f $PROFILES/$1.conf ]]; }
+signal_bar() { :; } # Quickshell polls every five seconds; no cross-user signal needed.
+
+arm_deadman() {
+  printf '%s\n' "${1:-transition}" > "$DEADMAN"
+  chmod 600 "$DEADMAN"
+  systemctl restart omarchy-vpn-deadman.timer
+}
+
+disarm_deadman() {
+  rm -f "$DEADMAN"
+  systemctl stop omarchy-vpn-deadman.timer 2>/dev/null || true
+}
+
+record_recent() {
+  local temporary=$ETC/recent.new
+  touch "$RECENT"
+  awk -v profile="$1" 'BEGIN { print profile } $0 != profile && count++ < 49 { print }' "$RECENT" > "$temporary"
+  chmod 600 "$temporary"
+  mv "$temporary" "$RECENT"
+}
+
+mark_stale() {
+  grep -qxF "$1" "$STALE" 2>/dev/null || printf '%s\n' "$1" >> "$STALE"
+}
+
+clear_stale() {
+  local temporary=$ETC/stale.new
+  grep -vxF "$1" "$STALE" > "$temporary" || true
+  chmod 600 "$temporary"
+  mv "$temporary" "$STALE"
+}
+
+write_status() {
+  local connected=false location=Disconnected profile=""
+  if ip link show "$WG" &>/dev/null; then
+    connected=true; profile=$(cat "$ACTIVE" 2>/dev/null || true)
+    location=$(awk -F '\t' -v p="$profile" '$1==p {print $3 ", " $4}' /usr/local/share/omarchy-vpn/locations.tsv)
+    valid_profile "$profile" && record_recent "$profile"
+  fi
+  cat > "$RUN/status" <<EOF
+connected=$connected
+location=$location
+profile=$profile
+autoconnect=$(setting autoconnect)
+killswitch=$(setting killswitch)
+EOF
+  chmod 644 "$RUN/status"
+  if [[ -f $RECENT ]]; then
+    install -m 644 "$RECENT" "$RUN/recent"
+  else
+    : > "$RUN/recent"; chmod 644 "$RUN/recent"
+  fi
+  install -m 644 "$STALE" "$RUN/stale"
+  signal_bar
+}
+
+clear_firewall() { nft delete table inet "$TABLE" 2>/dev/null || true; }
+disable_ipv6() {
+  # For IPv4-only profiles, blocking IPv6 merely at the output hook still
+  # leaves public addresses visible to browser/WebRTC APIs. Remove IPv6 from
+  # every interface for the complete tunnel lifetime and restore it afterward.
+  if [[ ! -f $IPV6_STATE ]]; then
+    printf 'all=%s\ndefault=%s\n' \
+      "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" \
+      "$(sysctl -n net.ipv6.conf.default.disable_ipv6)" > "$IPV6_STATE"
+    chmod 600 "$IPV6_STATE"
+  fi
+  sysctl -q -w net.ipv6.conf.default.disable_ipv6=1
+  sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
+}
+restore_ipv6() {
+  [[ -f $IPV6_STATE ]] || return 0
+  local previous_all previous_default
+  previous_all=$(sed -n 's/^all=//p' "$IPV6_STATE")
+  previous_default=$(sed -n 's/^default=//p' "$IPV6_STATE")
+  [[ $previous_all =~ ^[01]$ && $previous_default =~ ^[01]$ ]] || {
+    echo "Invalid saved IPv6 state" >&2
+    return 1
+  }
+  # Restore defaults first, then propagate the prior setting to existing
+  # interfaces. NetworkManager will solicit fresh router advertisements.
+  sysctl -q -w "net.ipv6.conf.default.disable_ipv6=$previous_default"
+  sysctl -q -w "net.ipv6.conf.all.disable_ipv6=$previous_all"
+  rm -f "$IPV6_STATE"
+}
+apply_firewall() {
+  clear_firewall
+  local tunnel_up=false
+  if ip link show "$WG" &>/dev/null; then
+    tunnel_up=true
+    # Apply an installer override or the DNS servers supplied by this profile.
+    # install-profiles removes DNS= before wg-quick runs so resolvectl remains
+    # the single resolver integration on Omarchy.
+    local dns=""
+    dns=$(tr ',\n' '  ' < "$DNS_DEFAULT" 2>/dev/null || true)
+    [[ -n ${dns// /} ]] || dns=$(cat "$PROFILES/dns/$(cat "$ACTIVE" 2>/dev/null)" 2>/dev/null || true)
+    if [[ -n ${dns// /} ]]; then
+      read -r -a dns_servers <<< "$dns"
+      resolvectl dns "$WG" "${dns_servers[@]}"
+      resolvectl domain "$WG" '~.'
+    fi
+    nft add table inet "$TABLE"
+    nft "add chain inet $TABLE output { type filter hook output priority -10; policy accept; }"
+    if ! grep -Eq '^\s*AllowedIPs\s*=.*::/0' "$RUN/$WG.conf"; then
+      nft add rule inet "$TABLE" output meta nfproto ipv6 reject
+    fi
+  fi
+  [[ $(setting killswitch) == true ]] || return 0
+  local endpoint host port ip4="" ip6="" fwmark=""
+  if [[ -s $ACTIVE ]]; then
+    # wg-quick marks only the encrypted outer packets. Accepting that mark is
+    # more reliable than resolving a load-balanced hostname a second time.
+    fwmark=$(wg show "$WG" fwmark 2>/dev/null || true)
+    endpoint=$(wg show "$WG" endpoints 2>/dev/null | awk 'NR==1 {print $2}')
+    host=${endpoint%:*}; host=${host#[}; host=${host%]}; port=${endpoint##*:}
+    [[ $host == *:* ]] && ip6=$host || ip4=$host
+  else port=51820; ip4=""; ip6=""; fwmark=""; fi
+  if [[ $tunnel_up == false ]]; then
+    nft add table inet "$TABLE"
+    nft "add chain inet $TABLE output { type filter hook output priority -10; policy accept; }"
+  fi
+  nft add rule inet "$TABLE" output oifname lo accept
+  nft add rule inet "$TABLE" output ct state established,related accept
+  nft add rule inet "$TABLE" output oifname "$WG" accept
+  [[ -n $fwmark && $fwmark != off ]] && nft add rule inet "$TABLE" output meta mark "$fwmark" accept
+  nft add rule inet "$TABLE" output udp sport 68 udp dport 67 accept
+  nft add rule inet "$TABLE" output udp sport 546 udp dport 547 accept
+  [[ -n $ip4 ]] && nft add rule inet "$TABLE" output ip daddr "$ip4" udp dport "$port" accept
+  [[ -n $ip6 ]] && nft add rule inet "$TABLE" output ip6 daddr "$ip6" udp dport "$port" accept
+  nft add rule inet "$TABLE" output reject
+}
+
+down() {
+  if ip link show "$WG" &>/dev/null; then
+    [[ -f $RUN/$WG.conf ]] || { echo "Active VPN configuration is missing" >&2; return 1; }
+    wg-quick down "$RUN/$WG.conf" >/dev/null
+  fi
+  rm -f "$RUN/$WG.conf" "$ACTIVE"
+}
+
+internet_available() {
+  curl -4 -fsS --connect-timeout 2 --max-time 4 https://api.ipify.org >/dev/null 2>&1 ||
+    ping -4 -c 1 -W 2 1.1.1.1 >/dev/null 2>&1
+}
+
+tunnel_works() {
+  local started latest
+  started=$(date +%s)
+  # Generate traffic through the new default route, then require both a fresh
+  # authenticated handshake and a response from outside the tunnel.
+  if ! ping -4 -c 1 -W 6 1.1.1.1 >/dev/null 2>&1; then
+    return 1
+  fi
+  latest=$(wg show "$WG" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -nr | head -n1)
+  [[ ${latest:-0} -ge $started ]]
+}
+
+connect() {
+  local had_internet=false
+  valid_profile "$1" || { echo "Invalid VPN profile" >&2; exit 2; }
+  internet_available && had_internet=true
+  down; clear_firewall
+  # A dead existing tunnel can hide the fact that the underlying network is
+  # healthy. This direct probe is VPN-essential and runs only while deciding
+  # whether a failed endpoint should be classified as stale.
+  if [[ $had_internet == false ]] && internet_available; then
+    had_internet=true
+  fi
+  install -m 600 "$PROFILES/$1.conf" "$RUN/$WG.conf"
+  if grep -Eq '^\s*AllowedIPs\s*=.*::/0' "$RUN/$WG.conf"; then restore_ipv6; else disable_ipv6; fi
+  wg-quick up "$RUN/$WG.conf" >/dev/null
+  if ! tunnel_works; then
+    down
+    apply_firewall
+    restore_ipv6
+    [[ $had_internet == true ]] && mark_stale "$1"
+    write_status
+    if [[ $had_internet == true ]]; then
+      echo "VPN location did not respond and was marked stale" >&2
+    else
+      echo "VPN connection failed while internet availability was unknown" >&2
+    fi
+    return 1
+  fi
+  printf '%s\n' "$1" > "$ACTIVE"
+  clear_stale "$1"
+  record_recent "$1"
+  apply_firewall; write_status
+}
+
+# This is intentionally availability-first: it is called only when an armed
+# privileged transition did not complete. Disable the kill switch, remove any
+# half-created tunnel/firewall, and restore the machine's previous IPv6 state.
+deadman_recover() {
+  [[ -f $DEADMAN ]] || return 0
+  rm -f "$DEADMAN"
+  set_setting killswitch false
+  down 2>/dev/null || true
+  clear_firewall
+  restore_ipv6 2>/dev/null || true
+  write_status
+}
+
+safe_connect() {
+  arm_deadman connect
+  if connect "$1"; then
+    disarm_deadman
+  else
+    deadman_recover
+    return 1
+  fi
+}
+auto_profile() {
+  local profile
+  # RECENT is stored newest-first and survives reboot. Ignore entries whose
+  # profile was subsequently removed, then resume the newest usable one.
+  if [[ -f $RECENT ]]; then
+    while IFS= read -r profile; do
+      if valid_profile "$profile"; then
+        printf '%s\n' "$profile"
+        return 0
+      fi
+    done < "$RECENT"
+  fi
+  # Use the installer's explicit default, then fall back deterministically.
+  profile=$(cat "$DEFAULT_PROFILE" 2>/dev/null || true)
+  if valid_profile "$profile"; then printf '%s\n' "$profile"
+  else find "$PROFILES" -maxdepth 1 -name '*.conf' -printf '%f\n' | sort | sed -n '1s/\.conf$//p'; fi
+}
+
+case "${1:-status}" in
+  connect) [[ $# == 2 ]] || exit 2; safe_connect "$2" ;;
+  disconnect)
+    [[ $# == 1 ]] || exit 2
+    down
+    # Establish the disconnected kill-switch policy before re-enabling IPv6.
+    apply_firewall
+    restore_ipv6
+    write_status
+    ;;
+  auto) [[ $# == 1 ]] || exit 2; safe_connect "$(auto_profile)" ;;
+  startup) [[ $(setting autoconnect) == true ]] && safe_connect "$(auto_profile)" || { apply_firewall; restore_ipv6; write_status; } ;;
+  resume) [[ $(setting autoconnect) == true ]] && safe_connect "$(cat "$ACTIVE" 2>/dev/null || auto_profile)" || { apply_firewall; restore_ipv6; write_status; } ;;
+  check)
+    if [[ $(setting autoconnect) == true ]]; then
+      if ! ip link show "$WG" &>/dev/null || [[ $(wg show "$WG" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -nr | head -n1) -lt $(($(date +%s)-300)) ]]; then
+        safe_connect "$(cat "$ACTIVE" 2>/dev/null || auto_profile)"
+      else write_status; fi
+    else write_status; fi
+    ;;
+  set-autoconnect)
+    [[ ${2:-} =~ ^(on|off)$ ]] || exit 2
+    set_setting autoconnect "$([[ $2 == on ]] && echo true || echo false)"
+    if [[ $2 == on ]] && ! ip link show "$WG" &>/dev/null; then
+      safe_connect "$(auto_profile)"
+    else
+      # Adopt an active location; use recent history only when disconnected.
+      write_status
+    fi
+    ;;
+  set-killswitch)
+    [[ ${2:-} =~ ^(on|off)$ ]] || exit 2
+    if [[ $2 == on ]]; then arm_deadman killswitch; fi
+    set_setting killswitch "$([[ $2 == on ]] && echo true || echo false)"
+    if apply_firewall && write_status; then
+      [[ $2 == on ]] && disarm_deadman
+    else
+      [[ $2 == on ]] && deadman_recover
+      exit 1
+    fi
+    ;;
+  deadman-recover) [[ $# == 1 ]] || exit 2; deadman_recover ;;
+  status) write_status ;;
+  *) exit 2 ;;
+esac

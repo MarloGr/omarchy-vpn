@@ -1,0 +1,7 @@
+[Unit]
+Description=Dead-man timer for Omarchy VPN transitions
+
+[Timer]
+OnActiveSec=60s
+AccuracySec=1s
+Unit=omarchy-vpn-deadman.service

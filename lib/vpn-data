@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Emit JSON consumed by the Omarchy Quickshell VPN plugin."""
+import json
+import pathlib
+import sys
+
+RUN = pathlib.Path("/run/omarchy-vpn")
+LOCATIONS = pathlib.Path("/usr/local/share/omarchy-vpn/locations.tsv")
+
+
+def values(path):
+    result = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if separator:
+                result[key] = value
+    except OSError:
+        pass
+    return result
+
+
+def lines(path):
+    try:
+        return [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    except OSError:
+        return []
+
+
+state = values(RUN / "status")
+if sys.argv[1:] == ["status"]:
+    connected = state.get("connected") == "true"
+    kill_switch = state.get("killswitch") == "true"
+    location = state.get("location") or "Disconnected"
+    icon = "󰌾" if kill_switch else "󰒘"
+    tooltip = (f"VPN connected: {location}" if connected else "VPN disconnected")
+    if kill_switch:
+        tooltip += "\nKill switch active"
+    print(json.dumps({
+        "text": icon, "tooltip": tooltip,
+        "class": "connected" if connected else "disconnected",
+        "connected": connected, "killswitch": kill_switch,
+        "autoconnect": state.get("autoconnect") == "true",
+        "location": location, "profile": state.get("profile", ""),
+    }, ensure_ascii=False))
+elif sys.argv[1:] == ["locations"]:
+    recent = lines(RUN / "recent")
+    recent_order = {profile: index for index, profile in enumerate(recent)}
+    stale = set(lines(RUN / "stale"))
+    rows = []
+    try:
+        source = LOCATIONS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        source = []
+    for line in source:
+        fields = line.split("\t")
+        if len(fields) != 4:
+            continue
+        profile, flag, city, country = fields
+        rows.append({
+            "profile": profile, "flag": flag, "city": city, "country": country,
+            "current": state.get("profile") == profile and state.get("connected") == "true",
+            "recent": profile in recent_order,
+            "recentOrder": recent_order.get(profile, 9999), "stale": profile in stale,
+        })
+    rows.sort(key=lambda row: (
+        not row["current"], not row["recent"], row["recentOrder"],
+        row["stale"], row["country"], row["city"],
+    ))
+    print(json.dumps(rows, ensure_ascii=False))
+else:
+    raise SystemExit(2)

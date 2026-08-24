@@ -1,0 +1,6 @@
+/pk
+/locations.tsv
+/profiles/*.conf
+/.install.*
+__pycache__/
+*.pyc

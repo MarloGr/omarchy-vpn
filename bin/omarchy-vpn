@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly VPNCTL=/usr/local/lib/omarchy-vpn/vpn-client
+readonly STATE=/run/omarchy-vpn/status
+
+rootctl() { "$VPNCTL" "$@"; }
+notify_error() { notify-send -u critical "VPN" "$1" 2>/dev/null || true; }
+
+case "${1:-menu}" in
+  status)
+    exec /usr/local/lib/omarchy-vpn/vpn-data status
+    ;;
+  locations) exec /usr/local/lib/omarchy-vpn/vpn-data locations ;;
+  toggle)
+    if [[ -r $STATE ]] && grep -qx 'connected=true' "$STATE"; then
+      rootctl disconnect || notify_error "Could not disconnect"
+    else
+      rootctl auto || notify_error "Could not connect"
+    fi
+    ;;
+  menu)
+    exec omarchy-shell community.omarchy-vpn open
+    ;;
+  *) exit 2 ;;
+esac

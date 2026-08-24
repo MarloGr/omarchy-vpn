@@ -1,0 +1,19 @@
+[Unit]
+Description=Restricted Omarchy VPN control socket
+After=omarchy-vpn.service
+Requires=omarchy-vpn.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/omarchy-vpn/vpn-control-daemon
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/omarchy-vpn /run/omarchy-vpn
+
+[Install]
+WantedBy=multi-user.target

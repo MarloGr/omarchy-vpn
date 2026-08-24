@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Validate and install provider-neutral WireGuard profiles."""
+import base64, glob, os, re, sys, tempfile
+validate_only=sys.argv[1:2]==["--validate"]; args=sys.argv[2:] if validate_only else sys.argv[1:]
+if len(args)!=(2 if validate_only else 3): raise SystemExit("usage: install-profiles [--validate] PK|- SOURCE [DESTINATION]")
+key_path,source=args[:2]; destination=None if validate_only else args[2]
+def valid_key(value):
+    try: return len(value)==44 and len(base64.b64decode(value,validate=True))==32
+    except (ValueError,TypeError): return False
+private_key=None
+if key_path!="-":
+    raw=open(key_path,encoding="utf-8").read().strip(); match=re.search(r"(?m)^\s*PrivateKey\s*=\s*(\S+)\s*$",raw)
+    private_key=match.group(1) if match else raw
+    if not valid_key(private_key): raise SystemExit(f"{key_path} does not contain a valid WireGuard private key")
+paths=sorted(glob.glob(os.path.join(source,"*.conf")))
+if not paths: raise SystemExit(f"No .conf profiles found in {source}")
+if destination:
+    os.makedirs(destination,mode=0o700,exist_ok=True); os.makedirs(os.path.join(destination,"dns"),mode=0o700,exist_ok=True)
+for path in paths:
+    config=open(path,encoding="utf-8").read()
+    if not re.search(r"(?m)^\s*\[Interface\]\s*$",config) or not re.search(r"(?m)^\s*\[Peer\]\s*$",config): raise SystemExit(f"{path} is not a WireGuard client profile")
+    if not re.search(r"(?m)^\s*Endpoint\s*=\s*\S+:\d+\s*$",config): raise SystemExit(f"{path} has no valid Endpoint")
+    if not re.search(r"(?m)^\s*AllowedIPs\s*=.*(?:0\.0\.0\.0/0|0\.0\.0\.0/1).*$",config): raise SystemExit(f"{path} must route IPv4 through the tunnel")
+    match=re.search(r"(?m)^(\s*PrivateKey\s*=\s*)(\S+)\s*$",config)
+    if not match: raise SystemExit(f"No PrivateKey field in {path}")
+    key=private_key or match.group(2)
+    if not valid_key(key): raise SystemExit(f"{path} needs a valid key; supply --pk FILE")
+    config=config[:match.start()]+match.group(1)+key+config[match.end():]
+    dns=[]
+    for values in re.findall(r"(?m)^\s*DNS\s*=\s*(.+?)\s*$",config): dns.extend(v.strip() for v in values.split(",") if v.strip())
+    config=re.sub(r"(?m)^\s*DNS\s*=.*\n?","",config)
+    if not re.search(r"(?m)^\s*PersistentKeepalive\s*=",config): config=config.rstrip()+"\nPersistentKeepalive = 25\n"
+    if validate_only: continue
+    target=os.path.join(destination,os.path.basename(path)); fd,tmp=tempfile.mkstemp(dir=destination)
+    try:
+        with os.fdopen(fd,"w",encoding="utf-8") as handle: handle.write(config)
+        os.chmod(tmp,0o600); os.replace(tmp,target)
+    finally:
+        if os.path.exists(tmp): os.unlink(tmp)
+    dns_target=os.path.join(destination,"dns",os.path.basename(path)[:-5])
+    with open(dns_target,"w",encoding="utf-8") as handle: handle.write(" ".join(dns)+"\n")
+    os.chmod(dns_target,0o600)

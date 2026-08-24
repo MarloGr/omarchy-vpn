@@ -1,0 +1,7 @@
+[Unit]
+Description=Check and repair Omarchy VPN
+After=network-online.target omarchy-vpn.service suspend.target hibernate.target hybrid-sleep.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/omarchy-vpn/vpnctl-root check

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+readonly SOURCE=$1
+readonly PROFILE_SOURCE=$2
+readonly PRIVATE_KEY=$3
+readonly METADATA=$4
+readonly DEFAULT_PROFILE=$5
+readonly DNS_OVERRIDE=$6
+
+install -d -m 700 /etc/omarchy-vpn
+active_profile=$(cat /run/omarchy-vpn/active 2>/dev/null || true)
+if [[ -n $active_profile && ! -f $PROFILE_SOURCE/$active_profile.conf ]]; then
+  echo "The active profile '$active_profile' is absent from the new set; disconnect before replacing profiles." >&2
+  exit 1
+fi
+staged=/etc/omarchy-vpn/profiles.new
+rm -rf "$staged"
+install -d -m 700 "$staged"
+python3 "$SOURCE/lib/install-profiles" "$PRIVATE_KEY" "$PROFILE_SOURCE" "$staged"
+rm -rf /etc/omarchy-vpn/profiles.old
+[[ ! -d /etc/omarchy-vpn/profiles ]] || mv /etc/omarchy-vpn/profiles /etc/omarchy-vpn/profiles.old
+mv "$staged" /etc/omarchy-vpn/profiles
+rm -rf /etc/omarchy-vpn/profiles.old
+printf '%s\n' "$DEFAULT_PROFILE" > /etc/omarchy-vpn/default-profile
+printf '%s\n' "${DNS_OVERRIDE//,/ }" > /etc/omarchy-vpn/dns-default
+chmod 600 /etc/omarchy-vpn/default-profile /etc/omarchy-vpn/dns-default
+install -d -m 755 /usr/local/lib/omarchy-vpn /usr/local/share/omarchy-vpn
+install -m 700 "$SOURCE/lib/vpnctl-root" "$SOURCE/lib/vpn-control-daemon" /usr/local/lib/omarchy-vpn/
+install -m 755 "$SOURCE/lib/vpn-client" "$SOURCE/lib/vpn-data" "$SOURCE/lib/uninstall" /usr/local/lib/omarchy-vpn/
+rm -f /usr/local/lib/omarchy-vpn/vpn-menu
+install -m 755 "$SOURCE/bin/omarchy-vpn" /usr/local/bin/omarchy-vpn
+install -m 644 "$METADATA" /usr/local/share/omarchy-vpn/locations.tsv
+rm -f /etc/sudoers.d/omarchy-vpn /etc/sudoers.d/02-wg-quick
+install -m 644 "$SOURCE"/systemd/*.service "$SOURCE"/systemd/*.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl disable --now omarchy-vpn-deadman.timer 2>/dev/null || true
+systemctl enable --now omarchy-vpn.service omarchy-vpn-control.service omarchy-vpn-check.timer omarchy-vpn-resume.service
+systemctl restart omarchy-vpn-control.service

@@ -1,0 +1,10 @@
+[Unit]
+Description=Restore Omarchy VPN after sleep
+After=suspend.target hibernate.target hybrid-sleep.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/omarchy-vpn/vpnctl-root resume
+
+[Install]
+WantedBy=suspend.target hibernate.target hybrid-sleep.target

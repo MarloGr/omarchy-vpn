@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "community.omarchy-vpn",
+  "name": "Omarchy VPN",
+  "version": "2.0.0",
+  "author": "Omarchy VPN",
+  "description": "WireGuard VPN status and profile controls",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "VPN",
+    "description": "WireGuard VPN status and profile controls",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Omarchy VPN persistent connection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/omarchy-vpn/vpnctl-root startup
+RemainAfterExit=yes
+ExecStop=/usr/local/lib/omarchy-vpn/vpnctl-root disconnect
+
+[Install]
+WantedBy=multi-user.target

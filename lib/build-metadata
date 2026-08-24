@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Build normalized location metadata from profiles and an optional TSV."""
+import csv, pathlib, re, sys
+profiles_dir=pathlib.Path(sys.argv[1]); metadata=None if sys.argv[2]=="-" else pathlib.Path(sys.argv[2])
+valid=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+profiles={p.stem for p in profiles_dir.glob("*.conf")}; rows={}
+if metadata:
+    with metadata.open(encoding="utf-8",newline="") as handle:
+        for number,fields in enumerate(csv.reader(handle,delimiter="\t"),1):
+            if not fields or fields[0].lstrip().startswith("#"): continue
+            if len(fields)!=4: raise SystemExit(f"{metadata}:{number}: expected 4 tab-separated fields")
+            profile,icon,name,group=(v.strip() for v in fields)
+            if profile not in profiles: raise SystemExit(f"{metadata}:{number}: unknown profile {profile!r}")
+            if profile in rows: raise SystemExit(f"{metadata}:{number}: duplicate profile {profile!r}")
+            rows[profile]=(icon,name,group)
+for profile in sorted(profiles):
+    if not valid.fullmatch(profile): raise SystemExit(f"Unsafe profile filename: {profile}.conf")
+    icon,name,group=rows.get(profile,("󰌾",profile.replace("_"," ").replace("-"," ").title(),"VPN"))
+    if any("\t" in v or "\n" in v for v in (icon,name,group)): raise SystemExit(f"Invalid metadata for {profile!r}")
+    print("\t".join((profile,icon or "󰌾",name or profile,group or "VPN")))

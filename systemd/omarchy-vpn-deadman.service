@@ -1,0 +1,6 @@
+[Unit]
+Description=Restore networking after an interrupted Omarchy VPN transition
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/omarchy-vpn/vpnctl-root deadman-recover

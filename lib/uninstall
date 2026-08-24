@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+systemctl disable --now omarchy-vpn-control.service omarchy-vpn-check.timer omarchy-vpn-deadman.timer omarchy-vpn-resume.service omarchy-vpn.service 2>/dev/null || true
+/usr/local/lib/omarchy-vpn/vpnctl-root disconnect 2>/dev/null || true
+rm -f /etc/systemd/system/omarchy-vpn.service /etc/systemd/system/omarchy-vpn-check.service /etc/systemd/system/omarchy-vpn-check.timer /etc/systemd/system/omarchy-vpn-deadman.service /etc/systemd/system/omarchy-vpn-deadman.timer /etc/systemd/system/omarchy-vpn-resume.service
+rm -f /etc/sudoers.d/omarchy-vpn /usr/local/bin/omarchy-vpn
+rm -rf /usr/local/lib/omarchy-vpn /usr/local/share/omarchy-vpn /etc/omarchy-vpn
+systemctl daemon-reload
+echo "System VPN components removed."
