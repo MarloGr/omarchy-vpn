@@ -67,10 +67,12 @@ clear_stale() {
 }
 
 write_status() {
-  local connected=false location=Disconnected profile=""
+  local connected=false location=Disconnected profile="" address="" endpoint=""
   if ip link show "$WG" &>/dev/null; then
     connected=true; profile=$(cat "$ACTIVE" 2>/dev/null || true)
     location=$(awk -F '\t' -v p="$profile" '$1==p {print $3 ", " $4}' /usr/local/share/omarchy-vpn/locations.tsv)
+    address=$(ip -o -4 address show dev "$WG" 2>/dev/null | awk 'NR==1 {print $4}')
+    endpoint=$(wg show "$WG" endpoints 2>/dev/null | awk 'NR==1 {print $2}')
     valid_profile "$profile" && record_recent "$profile"
   fi
   cat > "$RUN/status" <<EOF
@@ -79,6 +81,8 @@ location=$location
 profile=$profile
 autoconnect=$(setting autoconnect)
 killswitch=$(setting killswitch)
+address=$address
+endpoint=$endpoint
 EOF
   chmod 644 "$RUN/status"
   if [[ -f $RECENT ]]; then
@@ -180,15 +184,17 @@ internet_available() {
 }
 
 tunnel_works() {
-  local started latest
-  started=$(date +%s)
-  # Generate traffic through the new default route, then require both a fresh
-  # authenticated handshake and a response from outside the tunnel.
-  if ! ping -4 -c 1 -W 6 1.1.1.1 >/dev/null 2>&1; then
+  local latest cutoff
+  # Generate traffic through the new default route, then require both a recent
+  # authenticated handshake and a response from outside the tunnel. Some VPN
+  # exits discard ICMP, so an HTTPS response is an equally valid health check.
+  if ! curl -4 -fsS --connect-timeout 3 --max-time 6 https://api.ipify.org >/dev/null 2>&1 &&
+     ! ping -4 -c 1 -W 6 1.1.1.1 >/dev/null 2>&1; then
     return 1
   fi
   latest=$(wg show "$WG" latest-handshakes 2>/dev/null | awk '{print $2}' | sort -nr | head -n1)
-  [[ ${latest:-0} -ge $started ]]
+  cutoff=$(($(date +%s) - 30))
+  [[ ${latest:-0} -ge $cutoff ]]
 }
 
 connect() {
@@ -224,16 +230,23 @@ connect() {
   apply_firewall; write_status
 }
 
-# This is intentionally availability-first: it is called only when an armed
-# privileged transition did not complete. Disable the kill switch, remove any
-# half-created tunnel/firewall, and restore the machine's previous IPv6 state.
+# Recover an interrupted transition without losing persistent preferences.
+# A failed kill-switch activation rolls that activation back for availability;
+# a failed connection keeps an already-enabled kill switch enforced while the
+# watchdog continues trying to restore the tunnel.
 deadman_recover() {
   [[ -f $DEADMAN ]] || return 0
+  local transition
+  transition=$(cat "$DEADMAN" 2>/dev/null || true)
   rm -f "$DEADMAN"
-  set_setting killswitch false
   down 2>/dev/null || true
   clear_firewall
   restore_ipv6 2>/dev/null || true
+  if [[ $transition == killswitch ]]; then
+    set_setting killswitch false
+  else
+    apply_firewall
+  fi
   write_status
 }
 

@@ -85,6 +85,8 @@ contain hooks that execute as root.
 - Press `Super+Shift+V` to open the panel anywhere.
 - Lime means connected, red means disconnected, and the lock glyph means the
   kill switch is enabled.
+- While connected, the panel shows the tunnel IP and endpoint reported locally
+  by WireGuard.
 
 ```bash
 omarchy-vpn status
@@ -99,11 +101,13 @@ The UI talks to a root-owned Unix socket that accepts only fixed VPN commands
 and validated profile IDs. It cannot execute arbitrary privileged commands.
 
 Connections and kill-switch activation arm a 60-second systemd dead-man timer.
-If a transition fails, recovery removes the partial tunnel and firewall,
-disables the kill switch, and restores the previous IPv6 state. IPv6 is
-disabled only for profiles that do not route `::/0`.
+If a connection transition fails, recovery removes the partial tunnel,
+restores the previous IPv6 state, and preserves an enabled kill switch while
+the watchdog retries. A failed kill-switch activation is rolled back for
+availability. IPv6 is disabled only for profiles that do not route `::/0`.
 
-The watchdog repairs missing tunnels and handshakes older than five minutes.
+The watchdog retries shortly after boot and repairs missing tunnels and
+handshakes older than five minutes.
 Unresponsive profiles are marked `STALE` until a successful retry.
 
 ## Uninstall

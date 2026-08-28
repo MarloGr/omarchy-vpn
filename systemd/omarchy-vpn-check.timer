@@ -2,8 +2,8 @@
 Description=Periodically check Omarchy VPN
 
 [Timer]
-OnBootSec=45s
-OnUnitActiveSec=60s
+OnBootSec=15s
+OnUnitActiveSec=30s
 Persistent=true
 
 [Install]

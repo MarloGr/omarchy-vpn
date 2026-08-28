@@ -17,6 +17,8 @@ Panel {
   property bool busy: false
   property string location: "Disconnected"
   property string profile: ""
+  property string address: ""
+  property string endpoint: ""
   property string errorText: ""
   property string actionText: ""
   property string query: ""
@@ -134,6 +136,23 @@ Panel {
       PanelSeparator { foreground: root.foreground }
 
       Column {
+        visible: root.connected
+        width: parent.width
+        spacing: Style.space(6)
+
+        PanelSectionHeader {
+          text: "CONNECTION DETAILS"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        DetailRow { label: "VPN IP"; value: root.address || "Unavailable" }
+        DetailRow { label: "ENDPOINT"; value: root.endpoint || "Unavailable" }
+      }
+
+      PanelSeparator { visible: root.connected; foreground: root.foreground }
+
+      Column {
         width: parent.width
         spacing: Style.space(8)
 
@@ -184,7 +203,9 @@ Panel {
 
         Flickable {
           width: parent.width
-          height: Math.min(locationColumn.implicitHeight, Style.space(300))
+          // Leave room for the connection-details block when it is visible so
+          // the location list remains inside the panel's 590px height cap.
+          height: Math.min(locationColumn.implicitHeight, Style.space(root.connected ? 150 : 230))
           contentWidth: width
           contentHeight: locationColumn.implicitHeight
           clip: true
@@ -236,6 +257,8 @@ Panel {
           root.autoConnect = state.autoconnect === true
           root.location = state.location || "Disconnected"
           root.profile = state.profile || ""
+          root.address = state.address || ""
+          root.endpoint = state.endpoint || ""
         } catch (error) {
           root.errorText = "VPN status is unavailable"
         }
@@ -275,6 +298,31 @@ Panel {
   }
 
   Timer { id: refreshDelay; interval: 350; onTriggered: root.refresh() }
+
+  component DetailRow: Row {
+    required property string label
+    required property string value
+    width: parent.width
+    spacing: Style.space(12)
+
+    Text {
+      width: parent.width * 0.34
+      text: parent.label
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+    Text {
+      width: parent.width * 0.66 - parent.spacing
+      text: parent.value
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideMiddle
+    }
+  }
 
   component SettingRow: CursorSurface {
     id: settingRow
