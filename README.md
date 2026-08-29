@@ -1,4 +1,4 @@
-Warning! Vibecoded Project!
+Warning, Vibecoded Project! Intended for personal use only. Use at your own risk
 
 # Omarchy VPN
 
