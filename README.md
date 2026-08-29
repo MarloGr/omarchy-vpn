@@ -1,21 +1,8 @@
+Warning! Vibecoded Project!
+
 # Omarchy VPN
 
-A provider-neutral WireGuard client for Omarchy Quattro. It adds a themed
-Quickshell panel to the bar, manages multiple profiles through a restricted
-root service, and provides persistent auto-connect and kill-switch controls.
-
-The package contains no VPN credentials or provider profiles.
-
-## Requirements
-
-- Omarchy Quattro with `omarchy-shell`
-- WireGuard tools (`wg` and `wg-quick`)
-- `nftables`, `systemd`, `python3`, `curl`, `iputils`, and `util-linux`
-- Membership in the `wheel` group (for the restricted control socket)
-
-## Inputs
-
-Create these locally before installing. They are ignored by Git.
+WireGuard client for Omarchy Quattro. Adds a themed Quickshell VPN panel to the bar and provides auto-connect and kill-switch controls.
 
 ### `profiles/*.conf`
 
@@ -42,9 +29,6 @@ Customize labels with four tab-separated fields:
 oslo<TAB>🇳🇴<TAB>Oslo<TAB>Norway
 new-york<TAB>🇺🇸<TAB>New York<TAB>United States
 ```
-
-IDs match profile filenames without `.conf`. Missing rows receive a humanized
-filename, shield icon, and the group `VPN`.
 
 ## Install
 
